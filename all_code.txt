@@ -1,0 +1,154 @@
+const DEFAULT_API_BASE = "http://localhost:8080";
+
+async function postSentence(text, source = "extension") {
+  const response = await fetch(`${DEFAULT_API_BASE}/api/sentences`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, source })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Backend error: ${response.status} ${errorText}`);
+  }
+
+  return response.json();
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.action !== "capture_sentence") {
+    return;
+  }
+
+  const text = message.text?.trim();
+  if (!text) {
+    sendResponse({ ok: false, error: "Empty selection" });
+    return;
+  }
+
+  postSentence(text)
+    .then((data) => {
+      chrome.storage.local.set({ lastCapture: { text, time: Date.now() } });
+      sendResponse({ ok: true, data });
+    })
+    .catch((err) => {
+      sendResponse({ ok: false, error: err.message });
+    });
+
+  return true;
+});
+let lastSelection = "";
+
+function getSelectionText() {
+  const selection = window.getSelection();
+  if (!selection) return "";
+  return selection.toString().trim();
+}
+
+function maybeSendSelection() {
+  const text = getSelectionText();
+  if (!text || text === lastSelection) return;
+  lastSelection = text;
+
+  chrome.runtime.sendMessage({ action: "capture_sentence", text }, (response) => {
+    if (chrome.runtime.lastError) {
+      return;
+    }
+    if (!response?.ok) {
+      return;
+    }
+  });
+}
+
+document.addEventListener("mouseup", () => {
+  setTimeout(maybeSendSelection, 50);
+});
+
+// Keyboard shortcut: Ctrl+Shift+S to capture selection
+document.addEventListener("keydown", (event) => {
+  if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "s") {
+    maybeSendSelection();
+  }
+});
+{
+  "manifest_version": 3,
+  "name": "SentenceMiner",
+  "version": "0.1.0",
+  "description": "Capture highlighted subtitles and send to SentenceMiner backend.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://localhost:8080/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SentenceMiner"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SentenceMiner</title>
+    <style>
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        margin: 0;
+        padding: 12px;
+        width: 280px;
+        background: #f6f7fb;
+        color: #1e1e1e;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 8px 0;
+      }
+      .card {
+        background: white;
+        border-radius: 8px;
+        padding: 10px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      }
+      .meta {
+        font-size: 12px;
+        color: #6b7280;
+        margin-top: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SentenceMiner</h1>
+    <div class="card">
+      <div id="status">No capture yet.</div>
+      <div class="meta" id="time"></div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
+function formatTime(timestamp) {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString();
+}
+
+chrome.storage.local.get(["lastCapture"], (result) => {
+  const status = document.getElementById("status");
+  const time = document.getElementById("time");
+  const last = result.lastCapture;
+
+  if (!last) {
+    status.textContent = "No capture yet.";
+    time.textContent = "";
+    return;
+  }
+
+  status.textContent = last.text;
+  time.textContent = `Last captured: ${formatTime(last.time)}`;
+});
